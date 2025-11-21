@@ -1,0 +1,283 @@
+services:
+  # -----------------------
+  # Shared infra
+  # -----------------------
+  auth-db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: authsvc
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: authpw
+    ports:
+      - "5433:5432"
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  auction-db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: auction_db
+      POSTGRES_USER: auction_user
+      POSTGRES_PASSWORD: auction_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - auction-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  wallet-db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: wallets
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5435:5432"
+    volumes:
+      - wallet-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  # -----------------------
+  # Microservices
+  # -----------------------
+  user-service:
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://auth-db:5432/authsvc
+      SPRING_DATASOURCE_USERNAME: auth
+      SPRING_DATASOURCE_PASSWORD: authpw
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: "6379"
+      OPENSEARCH_HOST: "http://opensearch-node1:9200"
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: quartz_EB_@5911
+    depends_on:
+      - auth-db
+      - redis
+
+  auction-service:
+    build:
+      context: ./services/auction-service
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://auction-db:5432/auction_db
+      SPRING_DATASOURCE_USERNAME: auction_user
+      SPRING_DATASOURCE_PASSWORD: auction_pass
+      OPENSEARCH_HOST: "http://opensearch-node1:9200"
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: quartz_EB_@5911
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PAYMENT_CONSUMER_QUEUE: payment-service-consumer
+    depends_on:
+      - auction-db
+
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://auction-db:5432/auction_db
+      SPRING_DATASOURCE_USERNAME: auction_user
+      SPRING_DATASOURCE_PASSWORD: auction_pass
+      JWT_SECRET: MySuperSecretKey123
+      USER_SERVICE_BASE_URL: http://user-service:8081
+      OPENSEARCH_HOST: "http://opensearch-node1:9200"
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: quartz_EB_@5911
+    depends_on:
+      - auction-db
+      - user-service
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    ports:
+      - "8086:8081"
+    environment:
+      PGHOST: wallet-db
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: wallets
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      GATEWAY_BASE_URL: http://envoy:8080
+      PORT: 8081
+      OPENSEARCH_HOST: "http://opensearch-node1:9200"
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: quartz_EB_@5911
+    depends_on:
+      - wallet-db
+      - rabbitmq
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    ports:
+      - "8083:8080"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      QUEUE_BINDINGS: "payment.locked,payment.success,payment.failed"
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: "587"
+      OPENSEARCH_HOST: "http://opensearch-node1:9200"
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: quartz_EB_@5911
+    env_file:
+      - ./.env
+    depends_on:
+      - rabbitmq
+
+  envoy:
+    image: envoyproxy/envoy:v1.27-latest
+    volumes:
+      - ./gateway/envoy:/etc/envoy
+    ports:
+      - "8080:8080" # API gateway
+      - "9901:9901" # admin
+    depends_on:
+      - user-service
+      - auction-service
+      - payment-service
+      - notification-service
+      - analytics-service
+
+  # -----------------------
+  # OpenSearch cluster
+  # -----------------------
+  opensearch-node1:
+    image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:latest}
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node1
+      - discovery.seed_hosts=opensearch-node1,opensearch-node2
+      - cluster.initial_cluster_manager_nodes=opensearch-node1,opensearch-node2
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=quartz_EB_@5911
+      - OPENSEARCH_SECURITY_ENABLED=false
+      - DISABLE_SECURITY_PLUGIN=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data1:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    networks:
+      - opensearch-net
+
+  opensearch-node2:
+    image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:latest}
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node2
+      - discovery.seed_hosts=opensearch-node1,opensearch-node2
+      - cluster.initial_cluster_manager_nodes=opensearch-node1,opensearch-node2
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=quartz_EB_@5911
+      - OPENSEARCH_SECURITY_ENABLED=false
+      - DISABLE_SECURITY_PLUGIN=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data2:/usr/share/opensearch/data
+    networks:
+      - opensearch-net
+
+  opensearch-dashboards:
+    image: ${OPENSEARCH_DASHBOARDS_IMAGE:-opensearchproject/opensearch-dashboards:latest}
+    ports:
+      - "5601:5601"
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch-node1:9200","http://opensearch-node2:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+      OPENSEARCH_SECURITY_ENABLED: "false"
+    networks:
+      - opensearch-net
+  fluent-bit:
+    image: fluent/fluent-bit:latest
+    container_name: fluent-bit
+    depends_on:
+      - opensearch-node1
+      - auction-service
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ./parsers.conf:/fluent-bit/etc/parsers.conf
+    networks:
+      - opensearch-net
+      - default
+    environment:
+      - OPENSEARCH_HOST=opensearch-node1
+      - OPENSEARCH_PORT=9200
+      - OPENSEARCH_USER=admin
+      - OPENSEARCH_PASS=quartz_EB_@5911
+    env_file:
+      - .env
+
+
+# -----------------------
+# Volumes
+# -----------------------
+volumes:
+  auth-db-data:
+  auction-db-data:
+  wallet-db-data:
+  redis-data:
+  opensearch-data1:
+  opensearch-data2:
+
+# -----------------------
+# Networks
+# -----------------------
+networks:
+  opensearch-net:
+  default:
