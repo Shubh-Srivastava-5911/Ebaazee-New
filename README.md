@@ -1,6 +1,6 @@
 <div align="center">
 
-# Ebaazee - Microservices-Based Online Auction System
+# Ebaazee - Microservices-Based Online Auction System OSS
 
 </div>
 
