@@ -269,7 +269,7 @@ const AdminPage = () => {
                     </td>
                     <td>{new Date(product.endTime).toLocaleString()}</td>
                     <td>
-                      {getStatus(product) === 'ACTIVE' ? (
+                      {['ACTIVE', 'SOLD'].includes(getStatus(product)) ? (
                           <button
                               className={styles.freezeBtn}
                               onClick={() => handleFreeze(product.id)}
