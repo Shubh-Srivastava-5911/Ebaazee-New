@@ -12,7 +12,7 @@ else
   echo "Some image pulls failed, continuing to build/start what we can (pull failures ignored)."
 fi
 
-docker compose up --build -d
+docker compose up --build -d --remove-orphans
 
 echo "Waiting for databases and services to become healthy..."
 
@@ -30,16 +30,25 @@ check_tcp() {
   return 1
 }
 
-# Wait for Postgres and Rabbit/Redis
+# Wait for Postgres and RabbitMQ
 check_tcp localhost 5433 "auth-db"
 check_tcp localhost 5434 "auction-db"
 check_tcp localhost 5435 "wallet-db"
-check_tcp localhost 6379 "redis"
 check_tcp localhost 5672 "rabbitmq"
+
+echo "Waiting for RabbitMQ to be fully ready..."
+sleep 5
 
 echo "All infra reachable. Give services a few more seconds to boot..."
 sleep 10
 
+echo "Checking frontend availability..."
+check_tcp localhost 5173 "ebaazee-frontend"
+
 docker compose ps
 
-echo "Done. Use 'docker compose logs -f' to follow logs or 'docker compose down' to stop everything."
+echo ""
+echo "=========================================="
+echo "All services are up and running!"
+echo "=========================================="
+echo "Use 'docker compose logs -f' to follow logs or 'docker compose down' to stop everything."
